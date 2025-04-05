@@ -1,0 +1,21 @@
+[project]
+name = "SuperHexagonAI"
+version = "0.1.0"
+description = "Default template for PDM package"
+authors = [
+    {name = "Mikkel Sørensen", email = "m_hooge@hotmail.com"},
+]
+dependencies = [
+    "numpy>=2.2.3",
+    "pynput>=1.8.0",
+    "opencv-python>=4.11.0.86",
+    "pillow>=11.1.0",
+    "pywin32>=308",
+]
+requires-python = "==3.12.*"
+readme = "README.md"
+license = {text = "MIT"}
+
+
+[tool.pdm]
+distribution = false
