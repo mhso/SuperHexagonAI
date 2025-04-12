@@ -63,21 +63,32 @@ def mask_out_score(img: MatLike):
     Mask out highscore and time survived text at the top of the image.
     """
     h, w = img.shape[:2]
+    
+    # Mask out the highscore text (top left)
+    t1_x = int(w * 0.28)
+    t1_y = int(h * 0.041)
+    cv2.rectangle(img, (0, 0), (t1_x, t1_y), (0, 0, 0), thickness=-1)
+
+    left = 0
+    p_x = int(w * 0.803)
+    p_y = int(h * 0.07)
+    color = img[p_y, p_x]
+    if len(img.shape) == 3:
+        color = color[0]
+
+    if color < 10:
+        left = w * 0.04
 
     # Mask out the 'Hyper Mode' text (top right)
-    x_1 = int(w * 0.6)
-    x_2 = int(w * 0.836)
-    y = int(h * 0.06)
-    cv2.rectangle(img, (x_1, 0), (x_2, y), (0, 0, 0), thickness=-1)
+    t2_x_1 = int(w * 0.60 - left)
+    t2_x_2 = int(w * 0.82 - left)
+    t2_y = int(h * 0.041)
+    cv2.rectangle(img, (t2_x_1, 0), (t2_x_2, t2_y), (0, 0, 0), thickness=-1)
 
     # Mask out the time survived text (top right)
-    x = int(w * 0.18)
-    y = int(h * 0.1)
-    cv2.rectangle(img, (w - x, 0), (w - 1, y), (0, 0, 0), thickness=-1)
-
-    # Mask out the highscore text (top left)
-    x = int(w * 0.25)
-    cv2.rectangle(img, (0, 0), (x, y), (0, 0, 0), thickness=-1)
+    t3_x = int(w * 0.18 + left)
+    t3_y = int(h * 0.09)
+    cv2.rectangle(img, (w - t3_x, 0), (w - 1, t3_y), (0, 0, 0), thickness=-1)
 
 def grab_screenshot(final_size: tuple[int, int]) -> MatLike:
     """
@@ -106,10 +117,11 @@ def grab_screenshot(final_size: tuple[int, int]) -> MatLike:
         bitmap_bytes = data_bitmap.GetBitmapBits(True)
         img = Image.frombuffer("RGB", (sc_w, sc_h), bitmap_bytes, "raw", "BGRX", 0, 1)
 
-        img_arr = cv2.cvtColor(np.array(img), cv2.COLOR_RGBA2GRAY)
+        cv2_img = cv2.cvtColor(np.array(img), cv2.COLOR_RGBA2GRAY)
 
-        resized = cv2.resize(img_arr, final_size)
-        mask_out_score(resized)
+        if (cv2_img.shape[1], cv2_img.shape[0]) != final_size:
+            cv2_img = cv2.resize(cv2_img, final_size)
+        mask_out_score(cv2_img)
 
     finally:
         # Free resources
@@ -122,4 +134,4 @@ def grab_screenshot(final_size: tuple[int, int]) -> MatLike:
         if data_bitmap:
            win32gui.DeleteObject(data_bitmap.GetHandle())
 
-    return resized
+    return cv2_img

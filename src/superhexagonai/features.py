@@ -23,6 +23,7 @@ CURSOR_MIN_AREA = int(IMG_WIDTH * IMG_HEIGHT * 0.0000775) # ~25 at IMAGE_SIZE = 
 CURSOR_MAX_AREA = int(IMG_WIDTH * IMG_HEIGHT * 0.00031) # ~100 at IMAGE_SIZE = (768, 480)
 CURSOR_DIST_MIN = int(IMG_WIDTH * 0.0455) # ~35 at IMAGE_WIDTH = 768
 CURSOR_DIST_MAX = int(IMG_WIDTH * 0.1041) # ~80 at IMAGE_WIDTH = 768
+CURSOR_TRIANGLE_RATIO = 0.5
 
 THRESHOLD = 220
 BORDER_THICKNESS = 5
@@ -114,27 +115,57 @@ def extract_hexagon(img: MatLike) -> MatLike:
     flood_filled = grayscale.copy()
 
     # Do floodfill, to create a single unbroken contour for the hexagon
-    cv2.floodFill(flood_filled, mask, (center_x, center_y), 255)
+    cv2.floodFill(
+        flood_filled,
+        mask,
+        (center_x, center_y),
+        255,
+        40,
+        40,
+        cv2.FLOODFILL_FIXED_RANGE
+    )
 
+    # Do a binary OR between the inverted floodfilled image,
+    # and the original grayscale, to isolate just the hexagon
     im_inv = cv2.bitwise_not(flood_filled)
     thresh = get_threshold_img(grayscale | im_inv, THRESHOLD)
 
     contours = get_contours(thresh)
-    epsilon = 0.005 * cv2.arcLength(contours[0], True)
-    hexagon = cv2.approxPolyDP(contours[0], epsilon, True)
+    if not contours:
+        return None
+
+    # Usually there is just one contour here, but sometimes small
+    # contours on the edge of the hexagon sneak in, so we filter those out
+    closest_to_mid = min(
+        contours,
+        key=lambda c: eucl_dist(get_mid_bbox(cv2.boundingRect(c)), (center_x, center_y))
+    )
 
     # Attempts to construct a polygon fitted to the six sides of the hexagon,
     # so we can use its corners to split the screen into sectors.
-    # Attempts to do so six times with progressively lower threshold for precision.
+    # Attempts to do so ten times with progressively less precision
+    attempts = 10
+
+    area = cv2.contourArea(closest_to_mid)
+    shapes = []
     attempt = 0
-    attempts = 6
-    while len(hexagon) != attempts and attempt < attempts:
+    while attempt < attempts:
         eps = 0.005 + (0.005 * attempt)
-        epsilon = eps * cv2.arcLength(contours[0], True)
-        hexagon = cv2.approxPolyDP(contours[0], epsilon, True)
+        epsilon = eps * cv2.arcLength(closest_to_mid, True)
+        hexagon = cv2.approxPolyDP(closest_to_mid, epsilon, True)
+
+        if len(hexagon) == 6:
+            shapes.append(hexagon)
+
         attempt += 1
 
-    return sort_hexagon_points(hexagon)
+    if shapes == []:
+        return None
+
+    # Select the approximated hexagon that has the closet area to the full contour
+    best = min(shapes, key=lambda x: abs(cv2.contourArea(x) - area))
+
+    return sort_hexagon_points(best)
 
 def extract_cursor(img: MatLike, mid_p: Tuple[int, int]) -> Optional[MatLike]:
     """
@@ -153,21 +184,29 @@ def extract_cursor(img: MatLike, mid_p: Tuple[int, int]) -> Optional[MatLike]:
         if dist_to_mid < CURSOR_DIST_MIN or dist_to_mid > CURSOR_DIST_MAX or len(contour) < 5:
             continue
 
+        # Try to fit a triangle to the contour.
+        # If it fits well, the contour is probably the cursor
         triangle_area = cv2.minEnclosingTriangle(contour)[0]
-        if CURSOR_MIN_AREA < area < CURSOR_MAX_AREA and area / triangle_area > 0.7:
+        if CURSOR_MIN_AREA < area < CURSOR_MAX_AREA and area / triangle_area > CURSOR_TRIANGLE_RATIO:
             cursor = contour
 
     return cursor
 
 def invert_y(y):
+    """
+    Invert a y-coordinate to go from image coords to plot coords.
+    """
     return IMG_HEIGHT - y
 
-def get_slope(p_1, p_2):
+def get_slope(p_1: Tuple[float, float], p_2: Tuple[float, float]):
+    """
+    Calculate the arc tangent (slope) between two points.
+    """
     x_alpha = p_2[0] - p_1[0]
     y_alpha = p_2[1] - p_1[1]
     return math.atan2(y_alpha, x_alpha)
 
-def calculate_slope(corner: Tuple[int, int], opp_corner: Tuple[int, int]) -> Tuple[List[float], List[float]]:
+def calculate_sector_slope(corner: Tuple[int, int], opp_corner: Tuple[int, int]) -> Tuple[List[float], List[float]]:
     """
     Calculates the slope and intercept of the line that
     is formed by two given points of the middle hexagon.
@@ -202,7 +241,7 @@ def get_hexagon_slopes(hexagon: MatLike) -> Tuple[List[float], List[float]]:
     intercepts = [None] * 6
 
     for i in range(0, 3):
-        slope, intercept = calculate_slope(hexagon[i][0], hexagon[i+3][0])
+        slope, intercept = calculate_sector_slope(hexagon[i][0], hexagon[i+3][0])
         slopes[i] = slope
         slopes[i+3] = slope
         intercepts[i] = intercept
@@ -216,31 +255,32 @@ def get_sector_line_endpoints(hexagon: MatLike, slopes: List[float], intercepts:
     form lines that define the edge of each sector.
     """
     endpoints = [None] * len(hexagon)
+    mid_x, mid_y = get_mid_bbox(cv2.boundingRect(hexagon))
 
-    for i, side in enumerate(hexagon):
-        x_target = 0
-        y_target = 0
+    for i in range(len(hexagon)):
+        x_endpoint = 0
+        y_endpoint = 0
 
-        if side[0][0] < IMG_WIDTH/2:
+        if i < 3: # Left side of hexagon
             if slopes[i] < 0:
-                y_target = IMG_HEIGHT
+                y_endpoint = 0
             else:
-                y_target = 0
+                y_endpoint = IMG_HEIGHT
         else:
             if slopes[i] < 0:
-                y_target = 0
+                y_endpoint = IMG_HEIGHT
             else:
-                y_target = IMG_HEIGHT
+                y_endpoint = 0
 
         if slopes[i] == 0:
-            x_target = 0 if side[0][0] < IMG_WIDTH / 2 else IMG_WIDTH
-            y_target = IMG_HEIGHT / 2
+            x_endpoint = 0 if i < 3 else IMG_WIDTH
+            y_endpoint = mid_y
         elif abs(slopes[i]) == MAX_SLOPE: # Infinite slope.
-            x_target = intercepts[i]
+            x_endpoint = mid_x
         else:
-            x_target = (y_target - intercepts[i]) / slopes[i]
+            x_endpoint = (y_endpoint - intercepts[i]) / slopes[i]
 
-        endpoints[i] = (x_target, y_target)
+        endpoints[i] = (x_endpoint, y_endpoint)
 
     return endpoints
 
@@ -250,13 +290,13 @@ def split_screen_into_sectors(img: MatLike, hexagon: MatLike) -> List[Tuple[floa
     lines that matches the edges of each sector.
     """
     slopes, intercepts = get_hexagon_slopes(hexagon)
-    targets = get_sector_line_endpoints(hexagon, slopes, intercepts)
+    endpoints = get_sector_line_endpoints(hexagon, slopes, intercepts)
 
     for i in range(0, 3):
-        target = targets[i]
-        target_opp = targets[i+3]
-        x1, y1 = target_opp
-        x2, y2 = target
+        endpoint_1 = endpoints[i]
+        endpoint_2 = endpoints[i+3]
+        x1, y1 = endpoint_1
+        x2, y2 = endpoint_2
 
         cv2.line(
             img,
@@ -266,7 +306,7 @@ def split_screen_into_sectors(img: MatLike, hexagon: MatLike) -> List[Tuple[floa
             HEXAGON_SPLIT_THICKNESS
         )
 
-    return targets
+    return endpoints
 
 def get_mid_exclusion_area(hexagon: MatLike, cursor_contour: MatLike) -> Tuple[Tuple[int, int], int]:
     """
@@ -419,12 +459,6 @@ def group_connections_by_distance(
 
     return connections
 
-def calc_triangle_area(p1: tuple[float, float], p2: tuple[float, float], p3: tuple[float, float]):
-    """
-    Calculate the area of the triangle formed by the three given points.
-    """
-    return abs((p1[0] * (p2[1] - p3[1]) + p2[0] * (p3[1] - p1[1]) + p3[0] * (p1[1] - p2[1])) / 2.0)
-
 def get_closest_point_to_mid(contour: MatLike, mid_p: Tuple[int, int]) -> Tuple[int, int]:
     """
     Find the point on the given contour that is closest to the given point `mid_p`.
@@ -442,47 +476,43 @@ def get_closest_point_to_mid(contour: MatLike, mid_p: Tuple[int, int]) -> Tuple[
 
 def get_distance_to_obstacle(
     contour: MatLike,
-    target_1: Tuple[float, float],
-    target_2: Tuple[float, float],
+    endpoint_1: Tuple[float, float],
+    endpoint_2: Tuple[float, float],
     mid_p: Tuple[int, int]
 ) -> float:
     """
     Calculate the distance from the center of the middle hexagon
     to the nearest point on the contour of the given obstacle.
     """
-    x_target1 = target_1[0]
-    y_target1 = target_1[1]
-    x_target2 = target_2[0]
-    y_target2 = target_2[1]
+    x_endpoint_1 = endpoint_1[0]
+    y_endpoint_1 = invert_y(endpoint_1[1])
+    x_endpoint_2 = endpoint_2[0]
+    y_endpoint_2 = invert_y(endpoint_2[1])
 
     bbox = cv2.boundingRect(contour)
     moments = cv2.moments(contour)
     if moments['m00'] != 0:
         cont_x = moments['m10'] / moments['m00']
-        cont_y = invert_y(moments['m01'] / moments['m00'])
+        cont_y = moments['m01'] / moments['m00']
     else: # Revert to using bounding box
         bbox = cv2.boundingRect(contour)
         cont_x, cont_y = get_mid_bbox(bbox)
-        cont_y = invert_y(cont_y)
 
-    hex_y = invert_y(mid_p[1])
+    def sign(p1, p2, p3):
+        return (p1[0] - p3[0]) * (p2[1] - p3[1]) - (p2[0] - p3[0]) * (p1[1] - p3[1])
 
-    # Calculate the area of four triangles formed by:
-    # - target_1, target_2, mid_p (the entire sector)
-    # - cont_p, mid_p, target_2
-    # - target_1, cont_p, target_2
-    # - target_1, mid_p, cont_p
-    area = calc_triangle_area((x_target1, y_target1), (mid_p[0], hex_y), (x_target2, y_target2))
-    area2 = calc_triangle_area((cont_x, cont_y), (mid_p[0], hex_y), (x_target2, y_target2))
-    area3 = calc_triangle_area((x_target1, y_target1), (cont_x, cont_y), (x_target2, y_target2))
-    area4 = calc_triangle_area((x_target1, y_target1), (mid_p[0], hex_y), (cont_x, cont_y))
+    # Determine whether the obstacle we are looking at lies within the triangle formed
+    # by the current sector, using the method described here: https://stackoverflow.com/a/2049593
+    s1 = sign((cont_x, cont_y), mid_p, (x_endpoint_1, y_endpoint_1))
+    s2 = sign((cont_x, cont_y), (x_endpoint_1, y_endpoint_1), (x_endpoint_2, y_endpoint_2))
+    s3 = sign((cont_x, cont_y), (x_endpoint_2, y_endpoint_2), mid_p)
 
-    # Check whether the three smaller triangles (area2, area3, area4) approximate
-    # the area of the entire sector, meaning the contour lies within this sector
-    # If not, the smaller triangles would make up a bigger area
+    has_neg = any(s < 0 for s in (s1, s2, s3))
+    has_pos = any(s > 0 for s in (s1, s2, s3))
+
     dist = MAX_DIST
     cont_area = cv2.contourArea(contour)
-    if math.isclose(area, area2 + area3 + area4) and cont_area:
+    if not (has_neg and has_pos) and cont_area:
         cont_x, cont_y = get_closest_point_to_mid(contour, mid_p)
         dist = eucl_dist(mid_p, (cont_x, cont_y))
 
@@ -495,7 +525,7 @@ def filter_distances(
 ) -> Tuple[List[List[float]], List[List[List[int]]], List[List[float]]]:
     """
     Filter out distances (and matching connections/areas)
-    that are too close to one another. 
+    that are too close to one another.
     """
     if distances == []:
         return [], [], []
@@ -529,8 +559,8 @@ def sort_features_by_distance(
     return [x[0] for x in both_sorted], [x[1] for x in both_sorted], [x[2] for x in both_sorted]
 
 def get_distances_and_areas_in_sector(
-    target1: Tuple[float, float],
-    target2: Tuple[float, float],
+    endpoint_1: Tuple[float, float],
+    endpoint_2: Tuple[float, float],
     mid_p: Tuple[int, int],
     contours: List[MatLike],
     connections: List[List[List[int]]],
@@ -547,40 +577,46 @@ def get_distances_and_areas_in_sector(
         if contour is None:
             continue
 
-        dist = get_distance_to_obstacle(contour, target1, target2, mid_p)
+        dist = get_distance_to_obstacle(contour, endpoint_1, endpoint_2, mid_p)
         if dist < MAX_DIST:
             distances.append(dist)
             connected_ids.append((index, connections[index]))
             areas.append(cv2.contourArea(contour))
 
-    dist_to_cursor = get_distance_to_obstacle(cursor, target1, target2, mid_p)
+    dist_to_cursor = get_distance_to_obstacle(cursor, endpoint_1, endpoint_2, mid_p)
 
     return distances, connected_ids, areas, dist_to_cursor < MAX_DIST
 
-def get_relative_cursor_position(cursor_contour, target_1, target_2, center):
+def get_relative_cursor_position(cursor_mid, target_1, target_2, center):
     """
     Get the position of the cursor within the sector it resides.
     This is a value between -1 and 1, where -1 means the cursor is at the
     left most edge of the sector, 0 meaning its in the middle,
     and 1 meaning its at the right most edge.
     """
-    dist_cursor_to_center = eucl_dist(cursor_contour, center)
-    dist_target_1_to_center = eucl_dist(target_1, center)
-    dist_target_2_to_center = eucl_dist(target_2, center)
+    mid_x, mid_y = center
+    mid_y = invert_y(mid_y)
 
-    dist_1 = eucl_dist(cursor_contour, target_1) - (dist_cursor_to_center - dist_target_1_to_center)
-    dist_2 = eucl_dist(cursor_contour, target_2) - (dist_cursor_to_center - dist_target_2_to_center)
-    full_dist = dist_1 + dist_2
+    def angle_dist(a1, a2):
+        delta = abs(a2 - a1) % (math.pi * 2)
+        return (math.pi * 2) - delta if delta > math.pi else delta
 
-    left = (dist_2 / full_dist) - 0.5
-    right = (dist_1 / full_dist) - 0.5
+    x_1, y_1 = target_1[0] - mid_x, invert_y(target_1[1]) - mid_y
+    angle_1 = math.atan2(y_1, x_1)
+    x_2, y_2 = target_2[0] - mid_x, invert_y(target_2[1]) - mid_y
+    angle_2 = math.atan2(y_2, x_2)
 
-    if left == right:
-        return 0
+    cont_x, cont_y = cursor_mid
 
-    max_dist = -left if left > right else right
+    x_3, y_3 = cont_x - mid_x, invert_y(cont_y) - mid_y
+    angle_cursor = math.atan2(y_3, x_3)
 
-    return max_dist * 2
+    dist_left = angle_dist(angle_1, angle_cursor)
+    dist_right = angle_dist(angle_2, angle_cursor)
+
+    relative = dist_left / (dist_left + dist_right)
+
+    return (relative * 2) - 1
 
 def get_obstacle_features(image: MatLike, hexagon: MatLike, cursor_contour: MatLike) -> Optional[Features]:
     """
@@ -602,7 +638,7 @@ def get_obstacle_features(image: MatLike, hexagon: MatLike, cursor_contour: MatL
 
     all_contours = get_contours(image)
 
-    targets = split_screen_into_sectors(image, hexagon)
+    endpoints = split_screen_into_sectors(image, hexagon)
 
     filtered_contours = filter_contours(all_contours, hexagon, cursor_contour, False)
 
@@ -611,17 +647,18 @@ def get_obstacle_features(image: MatLike, hexagon: MatLike, cursor_contour: MatL
     contours = filter_contours(get_contours(image), hexagon, cursor_contour)
     connected_contours = get_contour_connections(filtered_contours, contours)
 
+    # Go through each sector and filter the features belonging to that sector
     distances = [[]] * 6
     obstacles = [[]] * 6
     filtered_connections = []
     cursor_sector = 0
-    for i, target in enumerate(targets):
-        next_t = targets[0]
-        if i < len(targets)-1:
-            next_t = targets[i+1]
+    for i, endpoint in enumerate(endpoints):
+        next_t = endpoints[0]
+        if i < len(endpoints)-1:
+            next_t = endpoints[i+1]
 
         dists, conns, areas, has_cursor = get_distances_and_areas_in_sector(
-            target, next_t, (mid_x, mid_y), contours, connected_contours, cursor_contour
+            endpoint, next_t, (mid_x, mid_y), contours, connected_contours, cursor_contour
         )
         filtered_dists, filtered_conns, filtered_areas = filter_distances(dists, conns, areas)
         sorted_dists, sorted_conns, sorted_obstacles = sort_features_by_distance(filtered_dists, filtered_conns, filtered_areas)
