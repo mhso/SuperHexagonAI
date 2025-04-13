@@ -1,7 +1,7 @@
 # SuperHexagonAI
 Self-playing program that can beat the hardest level of the video game Super Hexagon with no knowledge of the game's code using Computer Vision and a rule-based approach using simple heuristics to determine what moves to make.
 
-[Click here for a showcase and a breakdown of how it works.](https://youtube.com)
+[Click here for a showcase and a breakdown of how it works.](https://youtube.com/watch?v=nnmEXNx_j6M)
 
 ![Banner Image](banner.png "Super Hexagon AI")
 
@@ -13,6 +13,8 @@ Moves are made by assigning each sector a risk score based on the obstacles pres
 Some obstacles are detected explicitely and a hardcoded sequence of moves are used for those.
 
 If obstacles form a shape where there is only exit, we instead go straight to that exit.
+
+Does that constitute AI? I have no idea, but it sounds cool.
 
 ## Installation
 If you wish to try the program out for yourself, simply clone the repository and install the requirements. Bear in mind, that it only works on Windows for now, because of reliance on `pywin32` for screenshotting (but that might change).
