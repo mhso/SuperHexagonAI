@@ -17,8 +17,20 @@ If obstacles form a shape where there is only exit, we instead go straight to th
 Does that constitute AI? I have no idea, but it sounds cool.
 
 ## Installation
-If you wish to try the program out for yourself, simply clone the repository and install the requirements. Bear in mind, that it only works on Windows for now, because of reliance on `pywin32` for screenshotting (but that might change).
+If you wish to try the program out for yourself, follow these steps:
+1. Clone the repository
+2. The project uses `pdm` to install and manage packages, install it from [here](https://pdm-project.org/latest/#installation)
+3. Install packages with `pdm install`
+4. Run the program with `pdm run main.py` (see details below)
 
-The program is run through the `main.py` file. Open Super Hexagon, navigate to the level screen for the 'Hexagonest' level, run `main.py`, press 'Space' when prompted, and the game will play itself. Running Super Hexagon in windowed mode is recommended, as the program struggles to keep up with every frame when running in fullscreen (depending on the hardware used).
+Bear in mind, that things only work on Windows for now, because of reliance on `pywin32` for screenshotting (but that might change).
+
+Run the program:
+1. Open Super Hexagon
+2. Navigate to the level screen for the 'Hexagonest' level
+3. run `main.py`
+4. Press 'Space' when prompted, and the game will play itself
+
+Running Super Hexagon in windowed mode is recommended, as the program struggles to keep up with every frame when running in fullscreen (depending on the hardware used).
 
 I take no responsibility if you get in trouble for cheating the leaderboards, but the game is so old now I doubt it matters.
